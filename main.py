@@ -20,7 +20,7 @@ app = FastAPI()
 dotenv.load_dotenv()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Replace with your React app's URL
+    allow_origins=["http://localhost:3000","https://researcher-frontend.vercel.app"],  # Replace with your React app's URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
