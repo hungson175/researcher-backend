@@ -14,6 +14,7 @@ langchain-community = "*"
 gpt-researcher = "*"
 langgraph = "*"
 pygithub = "*"
+pytest = "*"
 
 [dev-packages]
 ipykernel = "*"

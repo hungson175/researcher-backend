@@ -4,7 +4,8 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from pydantic.v1 import BaseModel, Field
 from supabase import create_client, Client
 from langchain_openai import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder, HumanMessagePromptTemplate, SystemMessagePromptTemplate
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder, HumanMessagePromptTemplate, \
+    SystemMessagePromptTemplate
 from langchain.chains import LLMChain
 from langchain.memory import ConversationBufferMemory
 from backend.report_type import DetailedReport
@@ -13,14 +14,19 @@ from fastapi.middleware.cors import CORSMiddleware
 import logging
 import asyncio
 
-from utils import upload_to_github_gist, choose_translation_agent
+import agents
+from agents.agent_translator import translate_report
+from utils import upload_to_github_gist
 import utils
 
 app = FastAPI()
 dotenv.load_dotenv()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000","https://researcher-frontend.vercel.app"],  # Replace with your React app's URL
+    allow_origins=[
+        "http://localhost:3000",
+        "https://researcher-frontend.vercel.app"],
+    # Replace with your React app's URL
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -28,7 +34,7 @@ app.add_middleware(
 
 # Supabase credentials
 supabase: Client = create_client(
-    os.getenv("PUBLIC_SUPABASE_URL"), 
+    os.getenv("PUBLIC_SUPABASE_URL"),
     os.getenv("PUBLIC_SUPABASE_ANON_KEY")
 )
 
@@ -51,9 +57,11 @@ conversation = LLMChain(
     verbose=True,
     memory=memory,
 )
-    
+
+
 class Message(BaseModel):
     input: str
+
 
 class ReportRequest(BaseModel):
     query: str
@@ -61,6 +69,7 @@ class ReportRequest(BaseModel):
     report_source: str = "web_search"
     # tone: Tone = Tone.FORMAL
     # subtopics: list = []
+
 
 @app.post("/chat")
 async def generate_text(request: Message):
@@ -71,17 +80,18 @@ async def generate_text(request: Message):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.websocket("/genreport")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    
+
     try:
         data = await websocket.receive_json()
         request = ReportRequest(**data)
-        
+
         # Uncomment the following line to use the mock implementation
         # response = await mock_report_generation(websocket, request)
-        
+
         detailed_report = DetailedReport(
             query=request.query,
             report_type=request.report_type,
@@ -91,27 +101,27 @@ async def websocket_endpoint(websocket: WebSocket):
             websocket=websocket,
             subtopics=[]
         )
-        
+
         final_report = await detailed_report.run()
         await websocket.send_text(final_report)
-        
+
         # Upload the report to GitHub Gist
-        
-        # report = utils.translate_report(final_report,"Vietnamese")
+
+        report = translate_report(request.query,final_report, "Vietnamese")
         (english_file_name, vietnamese_file_name) = utils.gen_report_file_names(request.query)
-        upload_result_en = await upload_to_github_gist(final_report, english_file_name)
-        # upload_result_vi = await upload_to_github_gist(report["vi"], vietnamese_file_name)
-        
+        upload_result_en = await upload_to_github_gist(report["en"], english_file_name)
+        upload_result_vi = await upload_to_github_gist(report["vi"], vietnamese_file_name)
+
         logging.info(f"Upload result English: {upload_result_en}")
-        # logging.info(f"Upload result Vietnamese: {upload_result_vi}")
-        
+        logging.info(f"Upload result Vietnamese: {upload_result_vi}")
+
         response = {
-            "success": upload_result_en["success"],
+            "success": upload_result_en["success"] and upload_result_vi["success"],
             "message": upload_result_en["message"],
-            "en_content": final_report,
-            "vi_content": "TODO: Vietnamese version:\n========\n " + final_report,
+            "en_content": report["en"],
+            "vi_content": report["vi"],
             "published_url_en": upload_result_en["published_url"],
-            "published_url_vi": upload_result_en["published_url"]
+            "published_url_vi": upload_result_vi["published_url"]
         }
 
         await websocket.send_json(response)
@@ -129,6 +139,7 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         await websocket.close()
 
+
 @app.post("/genreport")
 async def generate_report(request: ReportRequest):
     try:
@@ -141,48 +152,27 @@ async def generate_report(request: ReportRequest):
             websocket=None,
             subtopics=[]
         )
-        
+
         final_report = await detailed_report.run()
         return {"report": final_report}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 async def mock_report_generation(websocket: WebSocket, request: ReportRequest):
     await asyncio.sleep(1)  # Simulate some processing time
     await websocket.send_text("Initiating research process...")
     await asyncio.sleep(1)
-    
-    mock_report = """# The Future of Renewable Energy
 
-## Introduction
-Renewable energy is poised to play a crucial role in the global energy landscape...
-
-## Current State of Renewable Energy
-As of 2023, renewable energy sources account for a significant portion of global energy production...
-
-## Emerging Technologies
-Several promising technologies are shaping the future of renewable energy:
-1. Advanced Solar Cells
-2. Next-generation Wind Turbines
-3. Improved Energy Storage Solutions
-
-## Challenges and Opportunities
-While the future of renewable energy is bright, several challenges remain:
-- Intermittency issues
-- Grid integration
-- Cost competitiveness
-
-## Conclusion
-The future of renewable energy is promising, with continued technological advancements and increasing global commitment to sustainability...
-
-Report complete."""
+    mock_report = utils.gen_mock_report()
+    print("Mock report generated: ", mock_report)
 
     for line in mock_report.split('\n'):
         await websocket.send_text(line)
         await asyncio.sleep(0.1)  # Simulate gradual report generation
 
     en_content = mock_report
-    vi_content = "VN-VERSION====\n\n" + mock_report
+    vi_content = translate_report(en_content, "Vietnamese")
     mock_gist_en = await upload_to_github_gist(en_content, "en.md")
     mock_gist_vi = await upload_to_github_gist(vi_content, "vi.md")
     if mock_gist_en["success"] and mock_gist_vi["success"]:
@@ -203,5 +193,3 @@ Report complete."""
             "published_url_en": "",
             "published_url_vi": ""
         }
-
-
